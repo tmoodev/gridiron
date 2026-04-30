@@ -281,7 +281,11 @@ async def reject_decision_dashboard(decision_id: str, league_id: str = Query(...
 
 @app.get("/api/action")
 async def action_via_token(token: str = Query(...)) -> Response:
-    """Handle approve/reject from email link. Token-gated, no CF Access needed."""
+    """Handle approve/reject from email link. Token-gated, no CF Access needed.
+
+    Replay protection: token hash is recorded in DynamoDB on first use.
+    Subsequent requests with the same token are rejected as already-used.
+    """
     result = verify_token(token)
     if not result:
         return Response(
@@ -290,9 +294,21 @@ async def action_via_token(token: str = Query(...)) -> Response:
             status_code=400,
         )
     decision_id, action = result
+    dynamo = get_dynamo()
+
+    # Replay protection: check if this token has been used before
+    import hashlib
+    token_hash = hashlib.sha256(token.encode()).hexdigest()[:16]
+    used_item = dynamo.get_item("FF#TOKEN#USED", token_hash)
+    if used_item:
+        log.warning("api.action_via_token.replay_attempt", token_hash=token_hash, decision_id=decision_id)
+        return Response(
+            content="<html><body><h2>This link has already been used.</h2></body></html>",
+            media_type="text/html",
+            status_code=409,
+        )
 
     # Find the decision across all leagues
-    dynamo = get_dynamo()
     updated = False
     for lid in LEAGUE_IDS:
         items = dynamo.query_prefix(f"FF#DECISION#{lid}", sk_prefix=f"LOG#{decision_id}")
@@ -305,6 +321,12 @@ async def action_via_token(token: str = Query(...)) -> Response:
                     status_code=409,
                 )
             new_status = "approved" if action == "approve" else "rejected"
+            # Mark token as used before updating decision (prevents TOCTOU replay)
+            dynamo.put_item(
+                "FF#TOKEN#USED",
+                token_hash,
+                {"decision_id": decision_id, "action": action, "used_at": datetime.now(timezone.utc).isoformat()},
+            )
             dynamo.update_item(
                 f"FF#DECISION#{lid}#{item['created_at']}",
                 f"LOG#{decision_id}",

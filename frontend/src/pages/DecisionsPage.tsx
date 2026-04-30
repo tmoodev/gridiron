@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Decision } from "../types";
+import type { Decision, League } from "../types";
 
 const TYPE_STYLES: Record<string, string> = {
   lineup:         "bg-blue-900/40 text-blue-300 border-blue-800",
@@ -17,7 +17,15 @@ const STATUS_STYLES: Record<string, string> = {
   expired:  "bg-slate-800 text-slate-500",
 };
 
-function DecisionCard({ d, onAction }: { d: Decision; onAction: () => void }) {
+function DecisionCard({
+  d,
+  leagueName,
+  onAction,
+}: {
+  d: Decision;
+  leagueName: string;
+  onAction: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState<"approve" | "reject" | null>(null);
 
@@ -34,7 +42,6 @@ function DecisionCard({ d, onAction }: { d: Decision; onAction: () => void }) {
 
   const typeStyle = TYPE_STYLES[d.type] ?? "bg-slate-800 text-slate-400 border-slate-700";
   const statusStyle = STATUS_STYLES[d.status] ?? "bg-slate-800 text-slate-400";
-  const leagueName = d.league_id === "1183557197018804224" ? "Season 9" : "Degen X";
 
   return (
     <div className="card border border-field-800 space-y-3">
@@ -114,15 +121,23 @@ type StatusFilter = "pending" | "approved" | "rejected";
 
 export default function DecisionsPage() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [leagues, setLeagues] = useState<League[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("pending");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const leagueName = (id: string): string =>
+    leagues.find((l) => l.league_id === id)?.league_name ?? id;
+
   const load = async () => {
     setLoading(true);
     try {
-      const data = await api.decisions(undefined, filter);
+      const [data, leagueList] = await Promise.all([
+        api.decisions(undefined, filter),
+        leagues.length === 0 ? api.leagues() : Promise.resolve(leagues),
+      ]);
       setDecisions(data);
+      if (leagues.length === 0) setLeagues(leagueList as League[]);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -158,13 +173,16 @@ export default function DecisionsPage() {
       {loading ? (
         <div className="text-slate-500 text-center py-12">Loading decisions…</div>
       ) : decisions.length === 0 ? (
-        <div className="card text-slate-500 text-sm">
-          No {filter} decisions.
-        </div>
+        <div className="card text-slate-500 text-sm">No {filter} decisions.</div>
       ) : (
         <div className="space-y-3">
           {decisions.map((d) => (
-            <DecisionCard key={d.decision_id} d={d} onAction={load} />
+            <DecisionCard
+              key={d.decision_id}
+              d={d}
+              leagueName={leagueName(d.league_id)}
+              onAction={load}
+            />
           ))}
         </div>
       )}
