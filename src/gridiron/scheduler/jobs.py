@@ -1,8 +1,12 @@
 """APScheduler job definitions.
 
 Jobs:
-  sync_leagues  — hourly: fetch both league configs from Sleeper, upsert DynamoDB
-  sync_rosters  — every 30 min during season: snapshot all rosters
+  sync_leagues      — hourly: fetch both league configs from Sleeper, upsert DynamoDB
+  sync_rosters      — every 30 min during season: snapshot all rosters
+  run_research      — daily at 7am ET: research all rostered players
+  run_valuation     — weekly (Monday 6am ET): recompute all player valuations
+  run_lineup_waiver — weekly (Wednesday 8am ET): propose lineup + waiver bids
+  run_trades        — daily at 9am ET: check for incoming trades + propose outgoing
 """
 
 from __future__ import annotations
@@ -12,9 +16,16 @@ from datetime import datetime, timezone
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from gridiron.agents.lineup_waiver_agent import LineupWaiverAgent
+from gridiron.agents.research_agent import ResearchAgent
+from gridiron.agents.trade_agent import TradeAgent
+from gridiron.agents.valuation_agent import ValuationAgent
 from gridiron.db.dynamo import DynamoClient
+from gridiron.email.ses import send_decision_email
+from gridiron.llm.bedrock_client import BedrockClient
 from gridiron.sleeper.client import SleeperClient, SleeperLeague, SleeperRoster
 
 log = structlog.get_logger(__name__)
@@ -52,6 +63,11 @@ def _roster_to_dynamo(roster: SleeperRoster, week: int) -> dict[str, object]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Sync jobs (data pipeline)
+# ---------------------------------------------------------------------------
+
+
 async def sync_leagues(dynamo: DynamoClient, sleeper: SleeperClient) -> None:
     """Fetch both leagues from Sleeper and upsert CONFIG records in DynamoDB."""
     log.info("jobs.sync_leagues.start")
@@ -87,10 +103,103 @@ async def sync_rosters(dynamo: DynamoClient, sleeper: SleeperClient, week: int) 
     log.info("jobs.sync_rosters.done", week=week)
 
 
-def build_scheduler(dynamo: DynamoClient, sleeper: SleeperClient, current_week: int = 1) -> AsyncIOScheduler:
-    """Build and return configured AsyncIOScheduler (not yet started)."""
-    scheduler = AsyncIOScheduler()
+# ---------------------------------------------------------------------------
+# Agent jobs (propose-then-approve)
+# ---------------------------------------------------------------------------
 
+
+async def run_research(
+    dynamo: DynamoClient,
+    sleeper: SleeperClient,
+    bedrock: BedrockClient,
+) -> None:
+    """Research all rostered players across both leagues."""
+    agent = ResearchAgent(dynamo, sleeper, bedrock)
+    for league_id in LEAGUE_IDS:
+        try:
+            await agent.run(league_id)
+        except Exception as exc:
+            log.error("jobs.research.error", league_id=league_id, error=str(exc))
+
+
+async def run_valuation(
+    dynamo: DynamoClient,
+    sleeper: SleeperClient,
+    bedrock: BedrockClient,
+) -> None:
+    """Recompute player valuations (all positions, both scoring formats)."""
+    agent = ValuationAgent(dynamo, sleeper, bedrock)
+    # Valuation runs once — dynasty mode covers all offensive positions
+    # Keeper mode adds IDP on second pass
+    for league_id in LEAGUE_IDS:
+        try:
+            await agent.run(league_id)
+        except Exception as exc:
+            log.error("jobs.valuation.error", league_id=league_id, error=str(exc))
+
+
+async def run_lineup_waiver(
+    dynamo: DynamoClient,
+    sleeper: SleeperClient,
+    bedrock: BedrockClient,
+    week: int,
+) -> None:
+    """Propose lineup and waiver bids for both leagues; email decisions to Travis."""
+    agent = LineupWaiverAgent(dynamo, sleeper, bedrock)
+    for league_id in LEAGUE_IDS:
+        try:
+            decisions = await agent.run(league_id, week=week)
+            for decision in decisions:
+                try:
+                    send_decision_email(decision)
+                except Exception as email_exc:
+                    log.error(
+                        "jobs.lineup_waiver.email_error",
+                        decision_id=decision.decision_id,
+                        error=str(email_exc),
+                    )
+        except Exception as exc:
+            log.error("jobs.lineup_waiver.error", league_id=league_id, error=str(exc))
+
+
+async def run_trades(
+    dynamo: DynamoClient,
+    sleeper: SleeperClient,
+    bedrock: BedrockClient,
+) -> None:
+    """Check for incoming trades and propose outgoing; email decisions to Travis."""
+    agent = TradeAgent(dynamo, sleeper, bedrock)
+    for league_id in LEAGUE_IDS:
+        try:
+            decisions = await agent.run(league_id)
+            for decision in decisions:
+                try:
+                    send_decision_email(decision)
+                except Exception as email_exc:
+                    log.error(
+                        "jobs.trades.email_error",
+                        decision_id=decision.decision_id,
+                        error=str(email_exc),
+                    )
+        except Exception as exc:
+            log.error("jobs.trades.error", league_id=league_id, error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Scheduler factory
+# ---------------------------------------------------------------------------
+
+
+def build_scheduler(
+    dynamo: DynamoClient,
+    sleeper: SleeperClient,
+    bedrock: BedrockClient,
+    current_week: int = 1,
+) -> AsyncIOScheduler:
+    """Build and return configured AsyncIOScheduler (not yet started)."""
+    scheduler = AsyncIOScheduler(timezone="America/New_York")
+
+    # Data pipeline
     scheduler.add_job(
         sync_leagues,
         trigger=IntervalTrigger(hours=1),
@@ -99,7 +208,6 @@ def build_scheduler(dynamo: DynamoClient, sleeper: SleeperClient, current_week: 
         replace_existing=True,
         misfire_grace_time=300,
     )
-
     scheduler.add_job(
         sync_rosters,
         trigger=IntervalTrigger(minutes=30),
@@ -107,6 +215,40 @@ def build_scheduler(dynamo: DynamoClient, sleeper: SleeperClient, current_week: 
         id="sync_rosters",
         replace_existing=True,
         misfire_grace_time=120,
+    )
+
+    # Agent jobs
+    scheduler.add_job(
+        run_research,
+        trigger=CronTrigger(hour=7, minute=0),  # 7am ET daily
+        args=[dynamo, sleeper, bedrock],
+        id="run_research",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        run_valuation,
+        trigger=CronTrigger(day_of_week="mon", hour=6, minute=0),  # Monday 6am ET
+        args=[dynamo, sleeper, bedrock],
+        id="run_valuation",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+    scheduler.add_job(
+        run_lineup_waiver,
+        trigger=CronTrigger(day_of_week="wed", hour=8, minute=0),  # Wednesday 8am ET
+        args=[dynamo, sleeper, bedrock, current_week],
+        id="run_lineup_waiver",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        run_trades,
+        trigger=CronTrigger(hour=9, minute=0),  # 9am ET daily
+        args=[dynamo, sleeper, bedrock],
+        id="run_trades",
+        replace_existing=True,
+        misfire_grace_time=600,
     )
 
     return scheduler

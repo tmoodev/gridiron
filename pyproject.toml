@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gridiron"
-version = "0.1.0"
+version = "0.2.0"
 description = "Autonomous fantasy football agent for Sleeper leagues"
 requires-python = ">=3.11"
 dependencies = [
@@ -53,7 +53,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["apscheduler.*", "playwright.*", "moto", "respx.*"]
+module = ["apscheduler.*", "playwright.*", "moto", "respx.*", "structlog.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
