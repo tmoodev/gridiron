@@ -13,7 +13,6 @@ import hmac
 import json
 import time
 from pathlib import Path
-from typing import Any
 
 import boto3
 import structlog

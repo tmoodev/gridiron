@@ -10,7 +10,7 @@ Grounded in: 00-principles.md (always loaded).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -86,7 +86,7 @@ class ResearchAgent(BaseAgent):
                 except Exception:
                     intel = {"raw": raw}
 
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 pk = f"FF#INTEL#{player_id}#{now}"
                 self.dynamo.put_item(
                     pk,

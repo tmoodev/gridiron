@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -134,7 +134,7 @@ class KTCScraper:
 
     def scrape(self) -> list[KTCPlayer]:
         """Fetch both 1QB and SuperFlex rankings and merge into a single list."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         log.info("ktc.scrape.start")
         resp_1qb = self._http.get(KTC_URL)

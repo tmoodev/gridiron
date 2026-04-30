@@ -13,7 +13,7 @@ Jobs:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
@@ -49,7 +49,7 @@ def _league_to_dynamo(league: SleeperLeague) -> dict[str, object]:
         "settings": json.dumps(league.settings),
         "total_rosters": league.total_rosters,
         "draft_id": league.draft_id,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -63,7 +63,7 @@ def _roster_to_dynamo(roster: SleeperRoster, week: int) -> dict[str, object]:
         "taxi": json.dumps(roster.taxi),
         "settings": json.dumps(roster.settings),
         "week": week,
-        "snapshotted_at": datetime.now(timezone.utc).isoformat(),
+        "snapshotted_at": datetime.now(UTC).isoformat(),
     }
 
 

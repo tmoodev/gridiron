@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import structlog
@@ -29,11 +29,11 @@ class Decision(BaseModel):
     proposed_action: dict[str, Any] = Field(default_factory=dict)
     status: DecisionStatus = "pending"
     created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     expires_at: str = Field(
         default_factory=lambda: (
-            datetime.now(timezone.utc) + timedelta(hours=72)
+            datetime.now(UTC) + timedelta(hours=72)
         ).isoformat()
     )
     strategy_docs_loaded: list[str] = Field(default_factory=list)
@@ -49,11 +49,11 @@ class Decision(BaseModel):
         return self.model_dump()
 
     @classmethod
-    def from_dynamo(cls, item: dict[str, Any]) -> "Decision":
+    def from_dynamo(cls, item: dict[str, Any]) -> Decision:
         return cls.model_validate(item)
 
     def is_expired(self) -> bool:
-        return datetime.now(timezone.utc) > datetime.fromisoformat(self.expires_at)
+        return datetime.now(UTC) > datetime.fromisoformat(self.expires_at)
 
 
 class BaseAgent:
