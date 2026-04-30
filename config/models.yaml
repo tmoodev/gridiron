@@ -1,0 +1,19 @@
+# Bedrock model configuration for Gridiron
+# reasoning_model: Used for valuation, lineup decisions, trade analysis
+# research_model: Used for news synthesis and player intel
+#
+# Cross-region inference profile prefix: us.
+# At startup, the app validates the research_model is reachable.
+# If unreachable, it falls back to reasoning_model automatically.
+
+reasoning_model: "us.anthropic.claude-sonnet-4-6-v1:0"
+
+# Grok via cross-region inference profile (scanned at startup).
+# Set to a Claude model as fallback if Grok is unavailable.
+research_model: "us.anthropic.claude-sonnet-4-6-v1:0"
+
+# Grok model ID to scan for across regions at startup.
+# If found, research_model will be overridden at runtime.
+grok_candidate_model: "us.x-ai.grok-beta"
+
+bedrock_region: "us-east-1"
