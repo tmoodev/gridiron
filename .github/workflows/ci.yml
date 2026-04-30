@@ -91,10 +91,20 @@ jobs:
             docker compose pull cloudflared 2>/dev/null || true
             docker compose up -d --build --remove-orphans
 
-            # Health check with rollback on failure
-            sleep 15
-            if ! curl -sf http://localhost:8000/api/health | grep -q '"ok"'; then
-              echo "Health check failed — rolling back to $PREV_COMMIT"
+            # Health check with retry + rollback on persistent failure
+            HEALTHY=0
+            for attempt in 1 2 3 4 5; do
+              sleep 20
+              echo "Health check attempt $attempt/5..."
+              if curl -sf http://localhost:8000/api/health | grep -q '"ok"' && \
+                 curl -sf http://localhost:3000/ > /dev/null; then
+                HEALTHY=1
+                break
+              fi
+            done
+
+            if [ "$HEALTHY" -eq 0 ]; then
+              echo "Health checks failed after 5 attempts — rolling back to $PREV_COMMIT"
               git reset --hard "$PREV_COMMIT"
               docker compose up -d --build --remove-orphans
               echo "Rollback complete"

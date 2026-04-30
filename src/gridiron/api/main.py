@@ -296,8 +296,21 @@ async def action_via_token(token: str = Query(...)) -> Response:
     decision_id, action = result
     dynamo = get_dynamo()
 
-    # Replay protection: check if this token has been used before
+    # Rate limiting: max 10 /api/action attempts per hour globally (brute-force guard)
     import hashlib
+    now_hour = datetime.now(timezone.utc).strftime("%Y%m%dT%H")
+    rate_item = dynamo.get_item("FF#RATELIMIT#ACTION", now_hour)
+    attempt_count = int(rate_item.get("count", 0)) if rate_item else 0
+    if attempt_count >= 10:
+        log.warning("api.action_via_token.rate_limited")
+        return Response(
+            content="<html><body><h2>Too many requests. Try again later.</h2></body></html>",
+            media_type="text/html",
+            status_code=429,
+        )
+    dynamo.update_item("FF#RATELIMIT#ACTION", now_hour, {"count": attempt_count + 1})
+
+    # Replay protection: check if this token has been used before
     token_hash = hashlib.sha256(token.encode()).hexdigest()[:16]
     used_item = dynamo.get_item("FF#TOKEN#USED", token_hash)
     if used_item:
