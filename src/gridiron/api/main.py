@@ -16,6 +16,7 @@ from gridiron.agents.base import Decision
 from gridiron.db.dynamo import DynamoClient
 from gridiron.email.ses import verify_token
 from gridiron.llm.bedrock_client import BedrockClient
+from gridiron.policy.gate import PolicyGate
 from gridiron.scheduler.jobs import LEAGUE_IDS, build_scheduler, sync_leagues, sync_rosters
 from gridiron.sleeper.client import SleeperClient
 
@@ -76,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Gridiron", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Gridiron", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -121,7 +122,7 @@ class HealthResponse(BaseModel):
 
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    return HealthResponse(status="ok", version="0.2.0")
+    return HealthResponse(status="ok", version="0.3.0")
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +366,38 @@ async def action_via_token(token: str = Query(...)) -> Response:
 </body></html>""",
         media_type="text/html",
     )
+
+
+# ---------------------------------------------------------------------------
+# Policy
+# ---------------------------------------------------------------------------
+
+
+class PolicyPatch(BaseModel):
+    policy: dict[str, str] | None = None
+    thresholds: dict[str, float] | None = None
+
+
+@app.get("/api/policy")
+async def get_policy() -> dict[str, Any]:
+    """Return the active policy config (DynamoDB > yaml fallback)."""
+    gate = PolicyGate(dynamo=get_dynamo())
+    return gate.get_config()
+
+
+@app.post("/api/policy")
+async def update_policy(patch: PolicyPatch) -> dict[str, str]:
+    """Persist a policy patch to DynamoDB."""
+    dynamo = get_dynamo()
+    gate = PolicyGate(dynamo=dynamo)
+    current = gate.get_config()
+    if patch.policy:
+        current.setdefault("policy", {}).update(patch.policy)
+    if patch.thresholds:
+        current.setdefault("thresholds", {}).update(patch.thresholds)
+    gate.set_config(current)
+    log.info("api.policy_updated")
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------

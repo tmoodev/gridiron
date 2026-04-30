@@ -17,3 +17,6 @@ research_model: "us.anthropic.claude-sonnet-4-6-v1:0"
 grok_candidate_model: "us.x-ai.grok-beta"
 
 bedrock_region: "us-east-1"
+
+strategy_bucket: "gridiron-strategy-docs"
+strategy_prefix: "strategy/"
