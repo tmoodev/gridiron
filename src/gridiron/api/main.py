@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -299,7 +300,7 @@ async def action_via_token(token: str = Query(...)) -> Response:
 
     # Rate limiting: max 10 /api/action attempts per hour globally (brute-force guard)
     import hashlib
-    now_hour = datetime.now(timezone.utc).strftime("%Y%m%dT%H")
+    now_hour = datetime.now(UTC).strftime("%Y%m%dT%H")
     rate_item = dynamo.get_item("FF#RATELIMIT#ACTION", now_hour)
     attempt_count = int(rate_item.get("count", 0)) if rate_item else 0
     if attempt_count >= 10:
@@ -339,12 +340,12 @@ async def action_via_token(token: str = Query(...)) -> Response:
             dynamo.put_item(
                 "FF#TOKEN#USED",
                 token_hash,
-                {"decision_id": decision_id, "action": action, "used_at": datetime.now(timezone.utc).isoformat()},
+                {"decision_id": decision_id, "action": action, "used_at": datetime.now(UTC).isoformat()},
             )
             dynamo.update_item(
                 f"FF#DECISION#{lid}#{item['created_at']}",
                 f"LOG#{decision_id}",
-                {"status": new_status, "actioned_at": datetime.now(timezone.utc).isoformat()},
+                {"status": new_status, "actioned_at": datetime.now(UTC).isoformat()},
             )
             log.info("api.action_via_token", decision_id=decision_id, action=action, status=new_status)
             updated = True
@@ -401,23 +402,331 @@ async def update_policy(patch: PolicyPatch) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Intel
+# My roster (enriched)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/leagues/{league_id}/my-roster")
+async def get_my_roster(league_id: str, week: int = 1) -> dict[str, Any]:
+    if league_id not in LEAGUE_IDS:
+        raise HTTPException(status_code=404, detail="League not found")
+    dynamo = get_dynamo()
+    items = dynamo.query_prefix(f"FF#ROSTER#{league_id}#{week}", sk_prefix="SNAPSHOT#")
+    # Return first matching roster (Travis's roster)
+    if not items:
+        raise HTTPException(status_code=404, detail="Roster not found")
+    item = items[0]
+    player_ids: list[str] = json.loads(item.get("players", "[]"))
+    starters: set[str] = set(json.loads(item.get("starters", "[]")))
+
+    enriched_players = []
+    for pid in player_ids:
+        player_item = dynamo.get_item(f"FF#PLAYER#{pid}", "META")
+        player_data: dict[str, Any] | None = None
+        if player_item:
+            valuations_raw = player_item.get("valuations")
+            player_data = {
+                "player_id": pid,
+                "player_name": player_item.get("player_name"),
+                "position": player_item.get("position"),
+                "team": player_item.get("team"),
+                "age": player_item.get("age"),
+                "years_exp": player_item.get("years_exp"),
+                "status": player_item.get("status"),
+                "valuations": json.loads(valuations_raw) if valuations_raw else None,
+                "ktc_value_1qb": player_item.get("ktc_value_1qb"),
+                "ktc_value_sf": player_item.get("ktc_value_sf"),
+                "ktc_trend_1qb": player_item.get("ktc_trend_1qb"),
+            }
+        enriched_players.append({
+            "player_id": pid,
+            "slot": "BN",  # Slot resolution from starters list
+            "is_starter": pid in starters,
+            "player": player_data,
+        })
+
+    total_dynasty = sum(
+        (p["player"]["valuations"].get("dynasty") or 0)
+        for p in enriched_players
+        if p["player"] and p["player"].get("valuations")
+    )
+    total_keeper = sum(
+        (p["player"]["valuations"].get("keeper") or 0)
+        for p in enriched_players
+        if p["player"] and p["player"].get("valuations")
+    )
+
+    return {
+        "league_id": league_id,
+        "week": week,
+        "roster_id": item.get("roster_id", 0),
+        "players": enriched_players,
+        "total_dynasty_value": total_dynasty,
+        "total_keeper_value": total_keeper,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Analytics (stubs — return valid empty shapes until full impl in Phase 5)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/leagues/{league_id}/analytics/performance")
+async def analytics_performance(league_id: str) -> dict[str, Any]:
+    if league_id not in LEAGUE_IDS:
+        raise HTTPException(status_code=404, detail="League not found")
+    dynamo = get_dynamo()
+    item = dynamo.get_item(f"FF#ANALYTICS#{league_id}", "PERFORMANCE")
+    if item:
+        return json.loads(item["data"]) if "data" in item else {}
+    return {
+        "record": {"wins": 0, "losses": 0, "ties": 0},
+        "points_for": 0.0,
+        "points_against": 0.0,
+        "league_avg_points": 0.0,
+        "playoff_odds": None,
+        "scoring_history": [],
+        "sos_remaining": None,
+    }
+
+
+@app.get("/api/leagues/{league_id}/analytics/construction")
+async def analytics_construction(league_id: str) -> dict[str, Any]:
+    if league_id not in LEAGUE_IDS:
+        raise HTTPException(status_code=404, detail="League not found")
+    dynamo = get_dynamo()
+    item = dynamo.get_item(f"FF#ANALYTICS#{league_id}", "CONSTRUCTION")
+    if item:
+        return json.loads(item["data"]) if "data" in item else {}
+    return {
+        "positional_values": {},
+        "age_curve": [],
+        "starter_depth_split": None,
+        "trade_need": None,
+        "pick_inventory": [],
+    }
+
+
+@app.get("/api/leagues/{league_id}/analytics/this-week")
+async def analytics_this_week(league_id: str) -> dict[str, Any]:
+    if league_id not in LEAGUE_IDS:
+        raise HTTPException(status_code=404, detail="League not found")
+    dynamo = get_dynamo()
+    item = dynamo.get_item(f"FF#ANALYTICS#{league_id}", "THIS_WEEK")
+    if item:
+        return json.loads(item["data"]) if "data" in item else {}
+    return {
+        "matchup": None,
+        "win_probability": None,
+        "weather_flags": [],
+        "start_sit": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Proposals (pending decisions — aliases to /decisions with status=pending)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/proposals", response_model=list[DecisionSummary])
+async def list_proposals(league_id: str | None = Query(None)) -> list[DecisionSummary]:
+    return await list_decisions(league_id=league_id, status="pending")
+
+
+class ModifyPatch(BaseModel):
+    proposed_action: dict[str, Any] | None = None
+    summary: str | None = None
+
+
+@app.post("/api/proposals/{proposal_id}/approve")
+async def approve_proposal(proposal_id: str, league_id: str = Query(...)) -> dict[str, str]:
+    return await _update_decision_status(proposal_id, league_id, "approved")
+
+
+@app.post("/api/proposals/{proposal_id}/reject")
+async def reject_proposal(proposal_id: str, league_id: str = Query(...)) -> dict[str, str]:
+    return await _update_decision_status(proposal_id, league_id, "rejected")
+
+
+@app.post("/api/proposals/{proposal_id}/modify")
+async def modify_proposal(
+    proposal_id: str, patch: ModifyPatch, league_id: str = Query(...)
+) -> dict[str, str]:
+    dynamo = get_dynamo()
+    items = dynamo.query_prefix(f"FF#DECISION#{league_id}", sk_prefix=f"LOG#{proposal_id}")
+    if not items:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    item = items[0]
+    updates: dict[str, Any] = {}
+    if patch.proposed_action is not None:
+        updates["proposed_action"] = json.dumps(patch.proposed_action)
+    if patch.summary is not None:
+        updates["summary"] = patch.summary
+    if updates:
+        dynamo.update_item(
+            f"FF#DECISION#{league_id}#{item['created_at']}",
+            f"LOG#{proposal_id}",
+            updates,
+        )
+    log.info("api.proposal_modified", proposal_id=proposal_id)
+    return {"decision_id": proposal_id, "status": "modified"}
+
+
+# ---------------------------------------------------------------------------
+# Players
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/players/{player_id}")
+async def get_player(player_id: str) -> dict[str, Any]:
+    dynamo = get_dynamo()
+    item = dynamo.get_item(f"FF#PLAYER#{player_id}", "META")
+    if not item:
+        raise HTTPException(status_code=404, detail="Player not found")
+    valuations_raw = item.get("valuations")
+    return {
+        "player_id": player_id,
+        "player_name": item.get("player_name"),
+        "position": item.get("position"),
+        "team": item.get("team"),
+        "age": item.get("age"),
+        "years_exp": item.get("years_exp"),
+        "status": item.get("status"),
+        "valuations": json.loads(valuations_raw) if valuations_raw else None,
+        "ktc_value_1qb": item.get("ktc_value_1qb"),
+        "ktc_value_sf": item.get("ktc_value_sf"),
+        "ktc_trend_1qb": item.get("ktc_trend_1qb"),
+        "updated_at": item.get("updated_at"),
+    }
+
+
+@app.get("/api/players/{player_id}/intel")
+async def get_player_intel_v2(player_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    dynamo = get_dynamo()
+    items = dynamo.query_prefix(f"FF#INTEL#{player_id}", limit=limit)
+    return [
+        {
+            "player_id": item.get("player_id", player_id),
+            "player_name": item.get("player_name"),
+            "intel": json.loads(item["intel"]) if "intel" in item else {},
+            "created_at": item.get("created_at", ""),
+        }
+        for item in items
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Intel (legacy path — kept for backward compat)
 # ---------------------------------------------------------------------------
 
 
 @app.get("/api/intel/{player_id}")
 async def get_player_intel(player_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    return await get_player_intel_v2(player_id, limit)
+
+
+# ---------------------------------------------------------------------------
+# Recommendations
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/recommendations")
+async def list_recommendations(league_id: str | None = Query(None)) -> list[dict[str, Any]]:
     dynamo = get_dynamo()
-    items = dynamo.query_prefix(f"FF#INTEL#{player_id}", limit=limit)
-    return [
-        {
-            "player_id": item.get("player_id"),
-            "player_name": item.get("player_name"),
-            "intel": json.loads(item["intel"]) if "intel" in item else {},
-            "created_at": item.get("created_at"),
-        }
-        for item in items
-    ]
+    results = []
+    leagues = [league_id] if league_id else LEAGUE_IDS
+    for lid in leagues:
+        items = dynamo.query_prefix(f"FF#RECOMMENDATION#{lid}")
+        for item in items:
+            if item.get("status", "active") == "active":
+                results.append({
+                    "id": item.get("recommendation_id", ""),
+                    "league_id": lid,
+                    "type": item.get("type", ""),
+                    "summary": item.get("summary", ""),
+                    "player_id": item.get("player_id"),
+                    "created_at": item.get("created_at", ""),
+                    "priority": item.get("priority", "low"),
+                })
+    results.sort(key=lambda r: r["created_at"], reverse=True)
+    return results
+
+
+@app.post("/api/recommendations/{recommendation_id}/promote")
+async def promote_recommendation(recommendation_id: str) -> dict[str, str]:
+    # Find the rec across leagues and create a pending decision
+    dynamo = get_dynamo()
+    for lid in LEAGUE_IDS:
+        items = dynamo.query_prefix(f"FF#RECOMMENDATION#{lid}", sk_prefix=f"REC#{recommendation_id}")
+        if items:
+            item = items[0]
+            # Create a pending decision from this recommendation
+            ts = datetime.now(UTC).isoformat()
+            decision = Decision(
+                decision_id=f"promoted-{recommendation_id[:8]}",
+                league_id=lid,
+                type=item.get("type", "research"),
+                summary=f"[Promoted] {item.get('summary', '')}",
+                reasoning="Promoted from recommendation by operator.",
+                status="pending",
+                created_at=ts,
+                expires_at=ts,
+            )
+            dynamo.put_item(
+                f"FF#DECISION#{lid}#{ts}",
+                f"LOG#{decision.decision_id}",
+                decision.model_dump(),
+            )
+            # Mark recommendation as promoted
+            dynamo.update_item(
+                f"FF#RECOMMENDATION#{lid}#{item.get('created_at', '')}",
+                f"REC#{recommendation_id}",
+                {"status": "promoted"},
+            )
+            log.info("api.recommendation_promoted", id=recommendation_id)
+            return {"status": "promoted", "decision_id": decision.decision_id}
+    raise HTTPException(status_code=404, detail="Recommendation not found")
+
+
+# ---------------------------------------------------------------------------
+# Job triggers
+# ---------------------------------------------------------------------------
+
+_ALLOWED_JOBS = {
+    "sync_leagues",
+    "sync_rosters",
+    "sync_players",
+    "run_research",
+    "run_valuation",
+    "run_lineup_waiver",
+    "sync_strategy_docs",
+}
+
+
+@app.post("/api/jobs/trigger/{job_name}")
+async def trigger_job(job_name: str) -> dict[str, str]:
+    if job_name not in _ALLOWED_JOBS:
+        raise HTTPException(status_code=400, detail=f"Unknown job: {job_name}")
+    from gridiron.scheduler import jobs as _jobs  # local import to avoid circular
+
+    func = getattr(_jobs, job_name, None)
+    if func is None:
+        raise HTTPException(status_code=501, detail=f"Job {job_name} not yet implemented")
+    dynamo = get_dynamo()
+    sleeper = get_sleeper()
+    # Fire and forget — pass standard deps where accepted
+    import asyncio
+    import inspect
+    sig = inspect.signature(func)
+    params = list(sig.parameters.keys())
+    kwargs: dict[str, Any] = {}
+    if "dynamo" in params:
+        kwargs["dynamo"] = dynamo
+    if "sleeper" in params:
+        kwargs["sleeper"] = sleeper
+    asyncio.create_task(func(**kwargs))
+    log.info("api.job_triggered", job=job_name)
+    return {"status": "triggered", "job": job_name}
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +749,7 @@ async def _update_decision_status(
     dynamo.update_item(
         f"FF#DECISION#{league_id}#{item['created_at']}",
         f"LOG#{decision_id}",
-        {"status": new_status, "actioned_at": datetime.now(timezone.utc).isoformat()},
+        {"status": new_status, "actioned_at": datetime.now(UTC).isoformat()},
     )
     log.info("api.decision_updated", decision_id=decision_id, status=new_status)
     return {"decision_id": decision_id, "status": new_status}

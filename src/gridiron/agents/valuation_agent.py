@@ -18,7 +18,7 @@ Grounded in:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -161,7 +161,7 @@ class ValuationAgent(BaseAgent):
                     "team": player.team,
                     "age": player.age,
                     "years_exp": player.years_exp,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
                     "valuations": json.dumps({
                         "keeper": vals.get("keeper_value"),
                         "dynasty": vals.get("dynasty_value"),

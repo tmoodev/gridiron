@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=Syne:wght@400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -6,33 +8,46 @@
   * {
     box-sizing: border-box;
   }
+  html, body {
+    background-color: #080c10;
+    color: #e2e8f0;
+  }
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 4px;
+    height: 4px;
   }
   ::-webkit-scrollbar-track {
-    background: #041a07;
+    background: #080c10;
   }
   ::-webkit-scrollbar-thumb {
-    background: #166534;
-    border-radius: 3px;
+    background: #1a2332;
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(45, 212, 191, 0.25);
   }
 }
 
 @layer components {
   .card {
-    @apply bg-field-900 border border-field-800 rounded-xl p-5;
+    @apply bg-surface border border-border rounded-xl p-4;
   }
   .badge {
     @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
   }
   .btn-primary {
-    @apply bg-field-500 hover:bg-field-600 text-white font-semibold px-4 py-2 rounded-lg transition-colors text-sm;
+    @apply bg-teal hover:bg-teal-dim text-navy font-semibold px-4 py-2 rounded-lg transition-colors text-sm;
   }
   .btn-danger {
-    @apply bg-transparent hover:bg-red-950 text-red-400 border border-red-700 font-semibold px-4 py-2 rounded-lg transition-colors text-sm;
+    @apply bg-transparent hover:bg-red-950 text-red-400 border border-red-800 font-semibold px-4 py-2 rounded-lg transition-colors text-sm;
   }
   .btn-ghost {
-    @apply bg-transparent hover:bg-field-800 text-slate-400 hover:text-slate-100 font-medium px-4 py-2 rounded-lg transition-colors text-sm;
+    @apply bg-transparent hover:bg-navy-300 text-slate-400 hover:text-slate-100 font-medium px-4 py-2 rounded-lg transition-colors text-sm;
+  }
+  .tab-active {
+    @apply text-teal border-b-2 border-teal pb-2;
+  }
+  .tab-inactive {
+    @apply text-slate-500 hover:text-slate-300 border-b-2 border-transparent pb-2;
   }
 }
