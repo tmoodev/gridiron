@@ -33,6 +33,21 @@ services:
     depends_on:
       - gridiron-backend
 
+  # Cloudflare Tunnel — routes gridiron.datatrav.net → gridiron-frontend:3000
+  # Token stored in AWS Secrets Manager at digitalmoore/gridiron/cf-tunnel-token
+  # Create tunnel via Cloudflare dashboard: Zero Trust → Tunnels → gridiron
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: gridiron-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - datatrav-net
+    depends_on:
+      - gridiron-frontend
+
 volumes:
   gridiron-playwright:
 
