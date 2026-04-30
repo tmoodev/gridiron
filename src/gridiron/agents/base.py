@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from gridiron.db.dynamo import DynamoClient
 from gridiron.llm.bedrock_client import BedrockClient
 from gridiron.sleeper.client import SleeperClient
+from gridiron.strategy import loader as _strategy_loader
 
 log = structlog.get_logger(__name__)
 
@@ -35,6 +36,8 @@ class Decision(BaseModel):
             datetime.now(timezone.utc) + timedelta(hours=72)
         ).isoformat()
     )
+    strategy_docs_loaded: list[str] = Field(default_factory=list)
+    strategy_doc_versions: dict[str, str] = Field(default_factory=dict)
 
     def pk(self) -> str:
         return f"FF#DECISION#{self.league_id}#{self.created_at}"
@@ -65,8 +68,25 @@ class BaseAgent:
         self.dynamo = dynamo
         self.sleeper = sleeper
         self.bedrock = bedrock
+        self._current_strategy_versions: dict[str, str] = {}
+
+    def _load_strategy(self, *doc_ids: str) -> str:
+        """Load strategy docs (always prepends 00-principles). Returns concatenated content.
+
+        Stores doc versions in self._current_strategy_versions for decision logging.
+        """
+        content = _strategy_loader.load(*doc_ids)
+        self._current_strategy_versions = _strategy_loader.load_metadata(*doc_ids)
+        log.debug(
+            "agent.strategy_loaded",
+            agent=self.name,
+            docs=list(self._current_strategy_versions.keys()),
+        )
+        return content
 
     def _save_decision(self, decision: Decision) -> None:
+        decision.strategy_docs_loaded = list(self._current_strategy_versions.keys())
+        decision.strategy_doc_versions = dict(self._current_strategy_versions)
         self.dynamo.put_item(decision.pk(), decision.sk(), decision.to_dynamo())
         log.info(
             "agent.decision_saved",
@@ -75,6 +95,7 @@ class BaseAgent:
             league_id=decision.league_id,
             decision_id=decision.decision_id,
             status=decision.status,
+            strategy_docs=decision.strategy_docs_loaded,
         )
 
     def _get_league_config(self, league_id: str) -> dict[str, Any] | None:

@@ -1,20 +1,24 @@
 """APScheduler job definitions.
 
 Jobs:
-  sync_leagues      — hourly: fetch both league configs from Sleeper, upsert DynamoDB
-  sync_rosters      — every 30 min during season: snapshot all rosters
-  run_research      — daily at 7am ET: research all rostered players
-  run_valuation     — weekly (Monday 6am ET): recompute all player valuations
-  run_lineup_waiver — weekly (Wednesday 8am ET): propose lineup + waiver bids
-  run_trades        — daily at 9am ET: check for incoming trades + propose outgoing
+  sync_leagues        — hourly: fetch both league configs from Sleeper, upsert DynamoDB
+  sync_rosters        — every 30 min during season: snapshot all rosters
+  sync_strategy_docs  — nightly 2am CT: upload local docs/strategy/ to S3
+  run_research        — daily at 7am ET: research all rostered players
+  run_valuation       — weekly (Monday 6am ET): recompute all player valuations
+  run_lineup_waiver   — weekly (Wednesday 8am ET): propose lineup + waiver bids
+  run_trades          — daily at 9am ET: check for incoming trades + propose outgoing
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
+import boto3
 import structlog
+import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -101,6 +105,37 @@ async def sync_rosters(dynamo: DynamoClient, sleeper: SleeperClient, week: int) 
         except Exception as exc:
             log.error("jobs.sync_rosters.error", league_id=league_id, week=week, error=str(exc))
     log.info("jobs.sync_rosters.done", week=week)
+
+
+_MODELS_YAML = Path(__file__).parent.parent.parent.parent / "config" / "models.yaml"
+_STRATEGY_LOCAL = Path(__file__).parent.parent.parent.parent / "docs" / "strategy"
+
+
+async def sync_strategy_docs() -> None:
+    """Nightly 2am CT: upload docs/strategy/*.md to S3 gridiron-strategy-docs."""
+    log.info("jobs.sync_strategy_docs.start")
+    try:
+        cfg: dict[str, object] = {}
+        try:
+            with open(_MODELS_YAML) as f:
+                cfg = yaml.safe_load(f) or {}
+        except Exception:
+            pass
+
+        bucket = str(cfg.get("strategy_bucket", "gridiron-strategy-docs"))
+        prefix = str(cfg.get("strategy_prefix", "strategy/"))
+        s3 = boto3.client("s3")
+
+        uploaded = 0
+        for md_file in sorted(_STRATEGY_LOCAL.glob("*.md")):
+            key = f"{prefix}{md_file.name}"
+            s3.upload_file(str(md_file), bucket, key)
+            uploaded += 1
+            log.info("jobs.sync_strategy_docs.uploaded", file=md_file.name, key=key)
+
+        log.info("jobs.sync_strategy_docs.done", uploaded=uploaded)
+    except Exception as exc:
+        log.error("jobs.sync_strategy_docs.error", error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +235,13 @@ def build_scheduler(
     scheduler = AsyncIOScheduler(timezone="America/New_York")
 
     # Data pipeline
+    scheduler.add_job(
+        sync_strategy_docs,
+        trigger=CronTrigger(hour=2, minute=0),  # 2am CT nightly
+        id="sync_strategy_docs",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
     scheduler.add_job(
         sync_leagues,
         trigger=IntervalTrigger(hours=1),

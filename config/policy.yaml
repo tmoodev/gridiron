@@ -1,0 +1,18 @@
+# Gridiron policy configuration
+# mode values: propose | auto_email | auto_silent
+# propose      → requires Travis approval before execution
+# auto_email   → executes automatically, emails Travis for visibility
+# auto_silent  → executes automatically, no notification
+
+policy:
+  lineup_set: propose
+  waiver_claim_low_faab: propose
+  waiver_claim_high_faab: propose
+  player_drop_low_value: propose
+  player_drop_high_value: propose
+  trade_respond: propose
+  trade_send: propose
+
+thresholds:
+  faab_high_pct: 15       # bids above this % of remaining FAAB → high_faab bucket
+  drop_value_high: 5      # players with dynasty_value above this → high_value drop bucket

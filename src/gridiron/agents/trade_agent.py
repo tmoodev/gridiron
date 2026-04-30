@@ -6,12 +6,19 @@ For each pending trade on Sleeper:
   - Send approval email (Phase 4) for accept/reject
 
 Also proposes outgoing trades based on roster gaps.
+
+Grounded in:
+  - 00-principles.md (always)
+  - 02-roster-construction.md
+  - 04-trade-strategy.md
+  - 09-league-specific-notes.md
+  - 06-dynasty-rookie-draft.md (dynasty only)
+  - 07-keeper-selection.md (keeper/home league only)
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 import structlog
@@ -20,7 +27,15 @@ from gridiron.agents.base import BaseAgent, Decision
 
 log = structlog.get_logger(__name__)
 
-_TRADE_EVAL_PROMPT = """You are an expert dynasty/keeper fantasy football trade analyst.
+_KEEPER_LEAGUE_ID = "1183557197018804224"
+_DYNASTY_LEAGUE_ID = "1331779473430810624"
+
+_TRADE_EVAL_PROMPT_TEMPLATE = """{strategy}
+
+---
+
+You are an expert dynasty/keeper fantasy football trade analyst. Apply the trade \
+strategy and principles above when evaluating this offer.
 
 League: {format} | Scoring: {scoring}
 
@@ -46,7 +61,12 @@ Respond as JSON:
   "confidence": "HIGH|MEDIUM|LOW"
 }}"""
 
-_OUTGOING_TRADE_PROMPT = """You are an expert dynasty/keeper fantasy football trade strategist.
+_OUTGOING_TRADE_PROMPT_TEMPLATE = """{strategy}
+
+---
+
+You are an expert dynasty/keeper fantasy football trade strategist. Apply the \
+trade strategy and principles above when identifying trade opportunities.
 
 League: {format} | Scoring: {scoring}
 
@@ -87,6 +107,18 @@ class TradeAgent(BaseAgent):
         if not cfg:
             return []
 
+        # Load strategy docs based on league
+        is_dynasty = (league_id == _DYNASTY_LEAGUE_ID)
+        is_keeper = (league_id == _KEEPER_LEAGUE_ID)
+
+        base_docs = ["02-roster-construction", "04-trade-strategy", "09-league-specific-notes"]
+        if is_dynasty:
+            base_docs.append("06-dynasty-rookie-draft")
+        elif is_keeper:
+            base_docs.append("07-keeper-selection")
+
+        strategy = self._load_strategy(*base_docs)
+
         travis_user_id = cfg.get("travis_user_id")
         league_format = cfg.get("format", "unknown")
         scoring = cfg.get("scoring", "half_ppr")
@@ -105,7 +137,7 @@ class TradeAgent(BaseAgent):
             incoming = self._get_pending_trades(league_id, travis_roster.roster_id)
             for trade in incoming:
                 d = await self._evaluate_incoming_trade(
-                    trade, league_id, league_format, scoring, all_players
+                    trade, league_id, league_format, scoring, all_players, strategy
                 )
                 if d:
                     self._save_decision(d)
@@ -116,7 +148,7 @@ class TradeAgent(BaseAgent):
         # --- Propose outgoing trades ---
         try:
             outgoing_decisions = await self._propose_outgoing_trades(
-                league_id, league_format, scoring, travis_roster, rosters, all_players
+                league_id, league_format, scoring, travis_roster, rosters, all_players, strategy
             )
             for d in outgoing_decisions:
                 self._save_decision(d)
@@ -149,6 +181,7 @@ class TradeAgent(BaseAgent):
         league_format: str,
         scoring: str,
         all_players: dict[str, Any],
+        strategy: str,
     ) -> Decision | None:
         giving_up = trade.get("gives", [])
         receiving = trade.get("receives", [])
@@ -160,10 +193,8 @@ class TradeAgent(BaseAgent):
                 if pid in all_players and all_players[pid].full_name
             ]
 
-        # Fetch valuations from DynamoDB
         valuations: dict[str, Any] = {}
-        all_ids = giving_up + receiving
-        for pid in all_ids:
+        for pid in giving_up + receiving:
             item = self.dynamo.get_item(f"FF#PLAYER#{pid}", "META")
             if item and "valuations" in item:
                 try:
@@ -171,7 +202,8 @@ class TradeAgent(BaseAgent):
                 except Exception:
                     pass
 
-        prompt = _TRADE_EVAL_PROMPT.format(
+        prompt = _TRADE_EVAL_PROMPT_TEMPLATE.format(
+            strategy=strategy,
             format=league_format,
             scoring=scoring,
             giving_up=", ".join(describe_players(giving_up)) or "nothing",
@@ -211,6 +243,7 @@ class TradeAgent(BaseAgent):
         travis_roster: Any,
         all_rosters: list[Any],
         all_players: dict[str, Any],
+        strategy: str,
     ) -> list[Decision]:
         def roster_summary(roster: Any) -> list[dict[str, Any]]:
             return [
@@ -245,7 +278,8 @@ class TradeAgent(BaseAgent):
             if r.roster_id != travis_roster.roster_id
         ]
 
-        prompt = _OUTGOING_TRADE_PROMPT.format(
+        prompt = _OUTGOING_TRADE_PROMPT_TEMPLATE.format(
+            strategy=strategy,
             format=league_format,
             scoring=scoring,
             my_roster_json=json.dumps(my_roster_data, indent=2),

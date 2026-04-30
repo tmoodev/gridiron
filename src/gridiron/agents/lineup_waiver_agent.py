@@ -7,6 +7,13 @@ Proposes:
 Both proposals land as FF#DECISION# records with status="pending".
 An approval email is sent for each. Travis approves/rejects; Phase 3
 actuator executes approved decisions via Playwright.
+
+Grounded in:
+  - 00-principles.md (always)
+  - 02-roster-construction.md
+  - 03-waiver-strategy.md
+  - 05-lineup-strategy.md
+  - 08-in-season-management.md
 """
 
 from __future__ import annotations
@@ -20,7 +27,12 @@ from gridiron.agents.base import BaseAgent, Decision
 
 log = structlog.get_logger(__name__)
 
-_LINEUP_PROMPT = """You are an expert fantasy football lineup optimizer.
+_LINEUP_PROMPT_TEMPLATE = """{strategy}
+
+---
+
+You are an expert fantasy football lineup optimizer. Apply the lineup strategy \
+and principles above when selecting starters.
 
 League format: {format}
 Scoring: {scoring}
@@ -41,7 +53,12 @@ Respond as JSON:
   "sit_start_highlights": ["<player>: start because...", "<player>: sit because..."]
 }}"""
 
-_WAIVER_PROMPT = """You are an expert fantasy football waiver wire analyst.
+_WAIVER_PROMPT_TEMPLATE = """{strategy}
+
+---
+
+You are an expert fantasy football waiver wire analyst. Apply the waiver strategy \
+and principles above when evaluating targets and structuring bids.
 
 League: {format} | Scoring: {scoring} | FAAB remaining: ${faab_remaining}
 Week: {week}
@@ -52,8 +69,9 @@ My roster:
 Available free agents (top targets by position, with projected points):
 {free_agents_json}
 
-Propose up to 3 FAAB bids. For each: player to add, bid amount, player to drop (if needed), and reasoning.
-Prioritize by need and value relative to cost. Be aggressive for high-upside players.
+Propose up to 3 FAAB bids. For each: player to add, bid amount, player to drop \
+(if needed), and reasoning. Prioritize by need and value relative to cost. \
+Be aggressive for high-upside players but respect the FAAB principles above.
 
 Respond as JSON:
 {{
@@ -78,6 +96,14 @@ class LineupWaiverAgent(BaseAgent):
     async def run(self, league_id: str, week: int = 1) -> list[Decision]:
         decisions: list[Decision] = []
 
+        # Load strategy docs for lineup/waiver decisions
+        strategy = self._load_strategy(
+            "02-roster-construction",
+            "03-waiver-strategy",
+            "05-lineup-strategy",
+            "08-in-season-management",
+        )
+
         cfg = self._get_league_config(league_id)
         if not cfg:
             log.warning("lineup_waiver_agent.no_config", league_id=league_id)
@@ -94,7 +120,6 @@ class LineupWaiverAgent(BaseAgent):
 
         all_players = self.sleeper.get_all_players()
 
-        # Build roster context
         roster_data = self._build_roster_context(travis_roster.players, all_players)
 
         league_format = cfg.get("format", "unknown")
@@ -104,7 +129,8 @@ class LineupWaiverAgent(BaseAgent):
 
         # --- Lineup proposal ---
         try:
-            prompt = _LINEUP_PROMPT.format(
+            prompt = _LINEUP_PROMPT_TEMPLATE.format(
+                strategy=strategy,
                 format=league_format,
                 scoring=scoring,
                 positions=json.dumps(positions),
@@ -133,8 +159,6 @@ class LineupWaiverAgent(BaseAgent):
 
         # --- Waiver proposal ---
         try:
-            # Build free agents list (top 20 by search_rank)
-            rostered_ids = set(travis_roster.players + travis_roster.reserve + travis_roster.taxi)
             all_rostered = {p for r in rosters for p in r.players + r.reserve + r.taxi}
             free_agents = [
                 p for pid, p in all_players.items()
@@ -154,7 +178,8 @@ class LineupWaiverAgent(BaseAgent):
                 for p in free_agents[:30]
             ]
 
-            prompt = _WAIVER_PROMPT.format(
+            prompt = _WAIVER_PROMPT_TEMPLATE.format(
+                strategy=strategy,
                 format=league_format,
                 scoring=scoring,
                 faab_remaining=faab_remaining,
